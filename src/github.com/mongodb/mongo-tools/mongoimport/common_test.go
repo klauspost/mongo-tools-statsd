@@ -30,51 +30,51 @@ func TestValidateHeaders(t *testing.T) {
 		So(err, ShouldBeNil)
 
 		Convey("if headerLine is true, the first line in the input should be used", func() {
-			headers, err := validateHeaders(NewCSVImportInput(fields, fileHandle), true)
+			headers, err := validateHeaders(NewCSVInputReader(fields, fileHandle), true)
 			So(err, ShouldBeNil)
 			So(len(headers), ShouldEqual, 2)
 			// spaces are trimed in the header
 			So(headers, ShouldResemble, strings.Split(strings.Replace(contents, " ", "", -1), ","))
 		})
 		Convey("if headerLine is false, the fields passed in should be used", func() {
-			headers, err := validateHeaders(NewCSVImportInput(fields, fileHandle), false)
+			headers, err := validateHeaders(NewCSVInputReader(fields, fileHandle), false)
 			So(err, ShouldBeNil)
 			So(len(headers), ShouldEqual, 3)
 			// spaces are trimed in the header
 			So(headers, ShouldResemble, fields)
 		})
 		Convey("if the fields contain '..', an error should be thrown", func() {
-			_, err := validateHeaders(NewCSVImportInput([]string{"a..a"}, fileHandle), false)
+			_, err := validateHeaders(NewCSVInputReader([]string{"a..a"}, fileHandle), false)
 			So(err, ShouldNotBeNil)
 		})
 		Convey("if the fields start/end in a '.', an error should be thrown", func() {
-			_, err := validateHeaders(NewCSVImportInput([]string{".a"}, fileHandle), false)
+			_, err := validateHeaders(NewCSVInputReader([]string{".a"}, fileHandle), false)
 			So(err, ShouldNotBeNil)
-			_, err = validateHeaders(NewCSVImportInput([]string{"a."}, fileHandle), false)
+			_, err = validateHeaders(NewCSVInputReader([]string{"a."}, fileHandle), false)
 			So(err, ShouldNotBeNil)
 		})
 		Convey("if the fields collide, an error should be thrown", func() {
-			_, err := validateHeaders(NewCSVImportInput([]string{"a", "a.a"}, fileHandle), false)
+			_, err := validateHeaders(NewCSVInputReader([]string{"a", "a.a"}, fileHandle), false)
 			So(err, ShouldNotBeNil)
-			_, err = validateHeaders(NewCSVImportInput([]string{"a", "a.ba", "b.a"}, fileHandle), false)
+			_, err = validateHeaders(NewCSVInputReader([]string{"a", "a.ba", "b.a"}, fileHandle), false)
 			So(err, ShouldNotBeNil)
-			_, err = validateHeaders(NewCSVImportInput([]string{"a", "a.b.c"}, fileHandle), false)
+			_, err = validateHeaders(NewCSVInputReader([]string{"a", "a.b.c"}, fileHandle), false)
 			So(err, ShouldNotBeNil)
 		})
 		Convey("if the fields don't collide, no error should be thrown", func() {
-			_, err := validateHeaders(NewCSVImportInput([]string{"a", "aa"}, fileHandle), false)
+			_, err := validateHeaders(NewCSVInputReader([]string{"a", "aa"}, fileHandle), false)
 			So(err, ShouldBeNil)
-			_, err = validateHeaders(NewCSVImportInput([]string{"a", "aa", "b.a", "b.c"}, fileHandle), false)
+			_, err = validateHeaders(NewCSVInputReader([]string{"a", "aa", "b.a", "b.c"}, fileHandle), false)
 			So(err, ShouldBeNil)
-			_, err = validateHeaders(NewCSVImportInput([]string{"a", "ba", "ab", "b.a"}, fileHandle), false)
+			_, err = validateHeaders(NewCSVInputReader([]string{"a", "ba", "ab", "b.a"}, fileHandle), false)
 			So(err, ShouldBeNil)
-			_, err = validateHeaders(NewCSVImportInput([]string{"a", "ba", "ab", "b.a", "b.c.d"}, fileHandle), false)
+			_, err = validateHeaders(NewCSVInputReader([]string{"a", "ba", "ab", "b.a", "b.c.d"}, fileHandle), false)
 			So(err, ShouldBeNil)
-			_, err = validateHeaders(NewCSVImportInput([]string{"a", "ab.c"}, fileHandle), false)
+			_, err = validateHeaders(NewCSVInputReader([]string{"a", "ab.c"}, fileHandle), false)
 			So(err, ShouldBeNil)
 		})
 		Convey("if the fields contain the same keys, an error should be thrown", func() {
-			_, err := validateHeaders(NewCSVImportInput([]string{"a", "ba", "a"}, fileHandle), false)
+			_, err := validateHeaders(NewCSVInputReader([]string{"a", "ba", "a"}, fileHandle), false)
 			So(err, ShouldNotBeNil)
 		})
 	})
@@ -232,5 +232,24 @@ func TestSetNestedValue(t *testing.T) {
 			setNestedValue("f", 23, testDocument)
 			So(testDocument, ShouldResemble, expectedDocumentTwo)
 		})
+	})
+}
+
+func TestRemoveBlankFields(t *testing.T) {
+	Convey("Given an unordered BSON document", t, func() {
+		Convey("the same document should be returned if there are no blanks",
+			func() {
+				bsonDocument := bson.M{"a": 3, "b": "hello"}
+				newDocument := removeBlankFields(bsonDocument)
+				So(bsonDocument, ShouldResemble, newDocument)
+			})
+		Convey("a new document without blanks should be returned if there are "+
+			" blanks", func() {
+			bsonDocument := bson.M{"a": 3, "b": ""}
+			newDocument := removeBlankFields(bsonDocument)
+			expectedDocument := bson.M{"a": 3}
+			So(newDocument, ShouldResemble, expectedDocument)
+		})
+
 	})
 }

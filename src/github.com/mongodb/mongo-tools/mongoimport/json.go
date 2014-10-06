@@ -9,11 +9,12 @@ import (
 	"gopkg.in/mgo.v2/bson"
 	"io"
 	"strings"
+	"sync"
 )
 
-// JSONImportInput is an implementation of ImportInput that reads documents
+// JSONInputReader is an implementation of InputReader that reads documents
 // in JSON format.
-type JSONImportInput struct {
+type JSONInputReader struct {
 	// IsArray indicates if the JSON import is an array of JSON documents
 	// or not
 	IsArray bool
@@ -35,6 +36,8 @@ type JSONImportInput struct {
 	// separator. It is a reader consisting of the decoder's buffer and the
 	// underlying reader
 	separatorReader io.Reader
+	// document is used to hold the decoded JSON document as a bson.M
+	document bson.M
 }
 
 const (
@@ -55,10 +58,10 @@ var (
 		"closing bracket ']' in input source")
 )
 
-// NewJSONImportInput creates a new JSONImportInput in array mode if specified,
+// NewJSONInputReader creates a new JSONInputReader in array mode if specified,
 // configured to read data to the given io.Reader
-func NewJSONImportInput(isArray bool, in io.Reader) *JSONImportInput {
-	return &JSONImportInput{
+func NewJSONInputReader(isArray bool, in io.Reader) *JSONInputReader {
+	return &JSONInputReader{
 		IsArray:            isArray,
 		Decoder:            json.NewDecoder(in),
 		readOpeningBracket: false,
@@ -67,18 +70,63 @@ func NewJSONImportInput(isArray bool, in io.Reader) *JSONImportInput {
 }
 
 // SetHeader is a no-op for JSON imports
-func (jsonImporter *JSONImportInput) SetHeader(hasHeaderLine bool) error {
+func (jsonImporter *JSONInputReader) SetHeader(hasHeaderLine bool) error {
 	return nil
 }
 
 // GetHeaders is a no-op for JSON imports
-func (jsonImporter *JSONImportInput) GetHeaders() []string {
+func (jsonImporter *JSONInputReader) GetHeaders() []string {
 	return nil
 }
 
 // ReadHeadersFromSource is a no-op for JSON imports
-func (jsonImporter *JSONImportInput) ReadHeadersFromSource() ([]string, error) {
+func (jsonImporter *JSONInputReader) ReadHeadersFromSource() ([]string, error) {
 	return nil, nil
+}
+
+// ReadDocument reads a line of input with the JSON representation of a document
+// and writes the BSON equivalent to the provided channel
+func (jsonImporter *JSONInputReader) ReadDocument(readChan chan bson.M, errChan chan error) {
+	rawChan := make(chan []byte, numWorkers)
+	var err error
+	go func() {
+		for {
+			if jsonImporter.IsArray {
+				if err = jsonImporter.readJSONArraySeparator(); err != nil {
+					close(rawChan)
+					if err == io.EOF {
+						errChan <- err
+					}
+					jsonImporter.numProcessed++
+					errChan <- fmt.Errorf("error reading separator after document #%v: %v", jsonImporter.numProcessed, err)
+				}
+			}
+			rawBytes, err := jsonImporter.Decoder.ScanObject()
+			if err != nil {
+				close(rawChan)
+				errChan <- err
+				return
+			}
+			rawChan <- rawBytes
+			jsonImporter.numProcessed++
+		}
+	}()
+
+	var wg sync.WaitGroup
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer func() {
+				wg.Done()
+				if r := recover(); r != nil {
+					log.Logf(0, "error decoding JSON: %v", r)
+				}
+			}()
+			jsonImporter.decodeJSON(rawChan, readChan)
+		}()
+	}
+	wg.Wait()
+	close(readChan)
 }
 
 // readJSONArraySeparator is a helper method used to process JSON arrays. It is
@@ -94,7 +142,7 @@ func (jsonImporter *JSONImportInput) ReadHeadersFromSource() ([]string, error) {
 // reads a JSON_ARRAY_END byte, as a validity check it will continue to scan the
 // input source until it hits an error (including EOF) to ensure the entire
 // input source content is a valid JSON array
-func (jsonImporter *JSONImportInput) readJSONArraySeparator() error {
+func (jsonImporter *JSONInputReader) readJSONArraySeparator() error {
 	jsonImporter.expectedByte = JSON_ARRAY_SEP
 	if jsonImporter.numProcessed == 0 {
 		jsonImporter.expectedByte = JSON_ARRAY_START
@@ -158,41 +206,21 @@ func (jsonImporter *JSONImportInput) readJSONArraySeparator() error {
 	return nil
 }
 
-// ImportDocument converts the given JSON object to a BSON object
-func (jsonImporter *JSONImportInput) ImportDocument() (bson.M, error) {
-	if jsonImporter.IsArray {
-		if err := jsonImporter.readJSONArraySeparator(); err != nil {
-			if err == io.EOF {
-				return nil, err
-			}
-			jsonImporter.numProcessed++
-			return nil, fmt.Errorf("error reading separator after document #%v: %v", jsonImporter.numProcessed, err)
+// decodeJSON reads in data from the rawChan channel and creates a BSON document
+// based on the record. It sends this document on the readChan channel if there
+// are no errors. If any error is encountered, it sends this on the errChan
+// channel and returns immediately
+func (jsonImporter *JSONInputReader) decodeJSON(rawChan chan []byte, readChan chan bson.M) {
+	for rawBytes := range rawChan {
+		document, err := json.UnmarshalMap(rawBytes)
+		if err != nil {
+			panic(fmt.Sprintf("JSON unmarshal error on document #%v: %v", jsonImporter.numProcessed, err))
 		}
-	}
-	jsonImporter.numProcessed++
-	document := bson.M{}
-	if err := jsonImporter.Decoder.Decode(&document); err != nil {
-		if err == io.EOF {
-			return nil, err
+		log.Logf(2, "got line: %v", document)
+		if err = bsonutil.ConvertJSONDocumentToBSON(document); err != nil {
+			panic(fmt.Sprintf("JSON => BSON conversion error on document #%v: %v", jsonImporter.numProcessed, err))
 		}
-		return nil, fmt.Errorf("JSON decode error on document #%v: %v", jsonImporter.numProcessed, err)
+		log.Logf(3, "got extended line: %#v", document)
+		readChan <- document
 	}
-	log.Logf(2, "got line: %#v", document)
-
-	// convert any data produced by mongoexport to the appropriate underlying
-	// extended BSON type. NOTE: this assumes specially formated JSON values
-	// in the input JSON - values such as:
-	//
-	// { $oid: 53cefc71b14ed89d84856287 }
-	//
-	// should be interpreted as:
-	//
-	// ObjectId("53cefc71b14ed89d84856287")
-	//
-	// This applies for all the other extended JSON types MongoDB supports
-	if err := bsonutil.ConvertJSONDocumentToBSON(document); err != nil {
-		return nil, fmt.Errorf("JSON => BSON conversion error on document #%v: %v", jsonImporter.numProcessed, err)
-	}
-	log.Logf(3, "got extended line: %#v", document)
-	return document, nil
 }

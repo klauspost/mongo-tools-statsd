@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/mongodb/mongo-tools/common/log"
 	"gopkg.in/mgo.v2/bson"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -30,11 +31,11 @@ func constructUpsertDocument(upsertFields []string, document bson.M) bson.M {
 // attempts conversion to a float, if that doesn't succeed, it returns the
 // token as is.
 func getParsedValue(token string) interface{} {
-	parsedInt, err := strconv.Atoi(strings.Trim(token, " "))
+	parsedInt, err := strconv.Atoi(token)
 	if err == nil {
 		return parsedInt
 	}
-	parsedFloat, err := strconv.ParseFloat(strings.Trim(token, " "), 64)
+	parsedFloat, err := strconv.ParseFloat(token, 64)
 	if err == nil {
 		return parsedFloat
 	}
@@ -62,6 +63,16 @@ func getUpsertValue(field string, document bson.M) interface{} {
 	return getUpsertValue(field[index+1:], subDoc)
 }
 
+// removeBlankFields removes empty/blank fields in csv and tsv
+func removeBlankFields(document bson.M) bson.M {
+	for key, value := range document {
+		if reflect.TypeOf(value).Kind() == reflect.String && value.(string) == "" {
+			delete(document, key)
+		}
+	}
+	return document
+}
+
 // setNestedValue takes a nested field - in the form "a.b.c" -
 // its associated value, and a document. It then assigns that
 // value to the appropriate nested field within the document
@@ -80,17 +91,17 @@ func setNestedValue(field string, value interface{}, document bson.M) {
 	document[left] = subDocument
 }
 
-// validateHeaders takes an ImportInput, and does some validation on the
+// validateHeaders takes an InputReader, and does some validation on the
 // header fields. It returns an error if an issue is found in the header list
-func validateHeaders(importInput ImportInput, hasHeaderLine bool) (validatedFields []string, err error) {
+func validateHeaders(inputReader InputReader, hasHeaderLine bool) (validatedFields []string, err error) {
 	unsortedHeaders := []string{}
 	if hasHeaderLine {
-		unsortedHeaders, err = importInput.ReadHeadersFromSource()
+		unsortedHeaders, err = inputReader.ReadHeadersFromSource()
 		if err != nil {
 			return nil, err
 		}
 	} else {
-		unsortedHeaders = importInput.GetHeaders()
+		unsortedHeaders = inputReader.GetHeaders()
 	}
 
 	headers := make([]string, len(unsortedHeaders), len(unsortedHeaders))

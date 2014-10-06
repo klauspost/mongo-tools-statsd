@@ -238,8 +238,8 @@ func TestMongoImportValidateSettings(t *testing.T) {
 	})
 }
 
-func TestGetInputReader(t *testing.T) {
-	Convey("Given a mongoimport instance, on calling getInputReader", t,
+func TestGetSourceReader(t *testing.T) {
+	Convey("Given a mongoimport instance, on calling getSourceReader", t,
 		func() {
 			Convey("an error should be thrown if the given file referenced by "+
 				"the reader does not exist", func() {
@@ -249,7 +249,7 @@ func TestGetInputReader(t *testing.T) {
 				mongoImport := MongoImport{
 					InputOptions: inputOptions,
 				}
-				_, err := mongoImport.getInputReader()
+				_, err := mongoImport.getSourceReader()
 				So(err, ShouldNotBeNil)
 			})
 
@@ -260,7 +260,7 @@ func TestGetInputReader(t *testing.T) {
 				mongoImport := MongoImport{
 					InputOptions: inputOptions,
 				}
-				_, err := mongoImport.getInputReader()
+				_, err := mongoImport.getSourceReader()
 				So(err, ShouldBeNil)
 			})
 
@@ -271,33 +271,14 @@ func TestGetInputReader(t *testing.T) {
 				mongoImport := MongoImport{
 					InputOptions: inputOptions,
 				}
-				_, err := mongoImport.getInputReader()
+				_, err := mongoImport.getSourceReader()
 				So(err, ShouldBeNil)
 			})
 		})
 }
 
-func TestRemoveBlankFields(t *testing.T) {
-	Convey("Given an unordered BSON document", t, func() {
-		Convey("the same document should be returned if there are no blanks",
-			func() {
-				bsonDocument := bson.M{"a": 3, "b": "hello"}
-				newDocument := removeBlankFields(bsonDocument)
-				So(bsonDocument, ShouldResemble, newDocument)
-			})
-		Convey("a new document without blanks should be returned if there are "+
-			" blanks", func() {
-			bsonDocument := bson.M{"a": 3, "b": ""}
-			newDocument := removeBlankFields(bsonDocument)
-			expectedDocument := bson.M{"a": 3}
-			So(newDocument, ShouldResemble, expectedDocument)
-		})
-
-	})
-}
-
-func TestGetImportInput(t *testing.T) {
-	Convey("Given a io.Reader on calling getImportInput", t, func() {
+func TestGetInputReader(t *testing.T) {
+	Convey("Given a io.Reader on calling getInputReader", t, func() {
 		Convey("no error should be thrown if neither --fields nor --fieldFile "+
 			"is used", func() {
 			inputOptions := &options.InputOptions{
@@ -306,7 +287,7 @@ func TestGetImportInput(t *testing.T) {
 			mongoImport := MongoImport{
 				InputOptions: inputOptions,
 			}
-			_, err := mongoImport.getImportInput(&os.File{})
+			_, err := mongoImport.getInputReader(&os.File{})
 			So(err, ShouldBeNil)
 		})
 		Convey("no error should be thrown if --fields is used", func() {
@@ -317,7 +298,7 @@ func TestGetImportInput(t *testing.T) {
 			mongoImport := MongoImport{
 				InputOptions: inputOptions,
 			}
-			_, err := mongoImport.getImportInput(&os.File{})
+			_, err := mongoImport.getInputReader(&os.File{})
 			So(err, ShouldBeNil)
 		})
 		Convey("no error should be thrown if --fieldFile is used and it "+
@@ -328,7 +309,7 @@ func TestGetImportInput(t *testing.T) {
 			mongoImport := MongoImport{
 				InputOptions: inputOptions,
 			}
-			_, err := mongoImport.getImportInput(&os.File{})
+			_, err := mongoImport.getInputReader(&os.File{})
 			So(err, ShouldBeNil)
 		})
 		Convey("an error should be thrown if --fieldFile is used and it "+
@@ -339,7 +320,7 @@ func TestGetImportInput(t *testing.T) {
 			mongoImport := MongoImport{
 				InputOptions: inputOptions,
 			}
-			_, err := mongoImport.getImportInput(&os.File{})
+			_, err := mongoImport.getInputReader(&os.File{})
 			So(err, ShouldNotBeNil)
 		})
 		Convey("no error should be thrown for CSV import inputs", func() {
@@ -349,7 +330,7 @@ func TestGetImportInput(t *testing.T) {
 			mongoImport := MongoImport{
 				InputOptions: inputOptions,
 			}
-			_, err := mongoImport.getImportInput(&os.File{})
+			_, err := mongoImport.getInputReader(&os.File{})
 			So(err, ShouldBeNil)
 		})
 		Convey("no error should be thrown for TSV import inputs", func() {
@@ -359,7 +340,7 @@ func TestGetImportInput(t *testing.T) {
 			mongoImport := MongoImport{
 				InputOptions: inputOptions,
 			}
-			_, err := mongoImport.getImportInput(&os.File{})
+			_, err := mongoImport.getInputReader(&os.File{})
 			So(err, ShouldBeNil)
 		})
 		Convey("no error should be thrown for JSON import inputs", func() {
@@ -369,13 +350,13 @@ func TestGetImportInput(t *testing.T) {
 			mongoImport := MongoImport{
 				InputOptions: inputOptions,
 			}
-			_, err := mongoImport.getImportInput(&os.File{})
+			_, err := mongoImport.getInputReader(&os.File{})
 			So(err, ShouldBeNil)
 		})
 	})
 }
 
-func TestImportDocuments(t *testing.T) {
+func TestReadDocuments(t *testing.T) {
 	Convey("Given a mongoimport instance with which to import documents, on "+
 		"calling importDocuments", t, func() {
 		Convey("no error should be thrown for CSV import on test data and all "+
@@ -399,7 +380,6 @@ func TestImportDocuments(t *testing.T) {
 			So(err, ShouldBeNil)
 			So(numImported, ShouldEqual, 3)
 		})
-
 		Convey("TOOLS-247: no error should be thrown for JSON import on test "+
 			"data and all documents should be imported correctly", func() {
 			toolOptions := getBasicToolOptions()
@@ -555,14 +535,12 @@ func TestImportDocuments(t *testing.T) {
 				IngestOptions:   ingestOptions,
 				SessionProvider: sessionProvider,
 			}
-			numImported, err := mongoImport.ImportDocuments()
+			_, err = mongoImport.ImportDocuments()
 			So(err, ShouldBeNil)
-			So(numImported, ShouldEqual, 4)
 			expectedDocuments := []bson.M{
 				bson.M{"_id": 1, "b": 2, "c": 3},
 				bson.M{"_id": 3, "b": 5.4, "c": "string"},
 				bson.M{"_id": 5, "b": 6, "c": 6},
-				bson.M{"_id": 8, "b": 6, "c": 6},
 			}
 			So(checkOnlyHasDocuments(expectedDocuments), ShouldBeNil)
 		})
@@ -721,9 +699,8 @@ func TestImportDocuments(t *testing.T) {
 				IngestOptions:   ingestOptions,
 				SessionProvider: sessionProvider,
 			}
-			numImported, err := mongoImport.ImportDocuments()
+			_, err = mongoImport.ImportDocuments()
 			So(err, ShouldNotBeNil)
-			So(numImported, ShouldEqual, 3)
 			expectedDocuments := []bson.M{
 				bson.M{"_id": 1, "b": 2, "c": 3},
 				bson.M{"_id": 3, "b": 5.4, "c": "string"},
@@ -739,7 +716,9 @@ func TestImportDocuments(t *testing.T) {
 					Fields: "_id,b,c",
 				}
 				toolOptions := getBasicToolOptions()
-				ingestOptions := &options.IngestOptions{}
+				ingestOptions := &options.IngestOptions{
+					StopOnError: true,
+				}
 				sessionProvider, err := db.InitSessionProvider(*toolOptions)
 				So(err, ShouldBeNil)
 				mongoImport := MongoImport{
@@ -748,9 +727,8 @@ func TestImportDocuments(t *testing.T) {
 					IngestOptions:   ingestOptions,
 					SessionProvider: sessionProvider,
 				}
-				numImported, err := mongoImport.ImportDocuments()
+				_, err = mongoImport.ImportDocuments()
 				So(err, ShouldNotBeNil)
-				So(numImported, ShouldEqual, 1)
 				expectedDocuments := []bson.M{
 					bson.M{"_id": 1, "b": 2, "c": 3},
 				}
@@ -764,7 +742,6 @@ func TestImportDocuments(t *testing.T) {
 			defer session.Close()
 			session.DB(testDB).C(testCollection).DropCollection()
 		})
-
 	})
 }
 
@@ -797,7 +774,7 @@ func checkOnlyHasDocuments(expectedDocuments []bson.M) error {
 }
 
 // getBasicToolOptions returns a test helper to instantiate the session provider
-// for calls to ImportDocument
+// for calls to ReadDocument
 func getBasicToolOptions() *commonOpts.ToolOptions {
 	ssl := &commonOpts.SSL{
 		UseSSL: false,

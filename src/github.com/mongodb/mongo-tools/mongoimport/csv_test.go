@@ -18,28 +18,28 @@ func init() {
 	})
 }
 
-func TestCSVImportDocument(t *testing.T) {
+func TestCSVReadDocument(t *testing.T) {
 	Convey("With a CSV import input", t, func() {
 		var err error
 		Convey("badly encoded csv should result in a parsing error", func() {
 			contents := `1, 2, foo"bar`
 			fields := []string{"a", "b", "c"}
-			csvImporter := NewCSVImportInput(fields, bytes.NewReader([]byte(contents)))
-			_, err = csvImporter.ImportDocument()
+			csvImporter := NewCSVInputReader(fields, bytes.NewReader([]byte(contents)))
+			_, err = csvImporter.ReadDocument()
 			So(err, ShouldNotBeNil)
 		})
 		Convey("escaped quotes are parsed correctly", func() {
 			contents := `1, 2, "foo""bar"`
 			fields := []string{"a", "b", "c"}
-			csvImporter := NewCSVImportInput(fields, bytes.NewReader([]byte(contents)))
-			_, err = csvImporter.ImportDocument()
+			csvImporter := NewCSVInputReader(fields, bytes.NewReader([]byte(contents)))
+			_, err = csvImporter.ReadDocument()
 			So(err, ShouldBeNil)
 		})
 		Convey("whitespace separated quoted strings are still an error", func() {
 			contents := `1, 2, "foo"  "bar"`
 			fields := []string{"a", "b", "c"}
-			csvImporter := NewCSVImportInput(fields, bytes.NewReader([]byte(contents)))
-			_, err = csvImporter.ImportDocument()
+			csvImporter := NewCSVInputReader(fields, bytes.NewReader([]byte(contents)))
+			_, err = csvImporter.ReadDocument()
 			So(err, ShouldNotBeNil)
 		})
 		Convey("multiple escaped quotes separated by whitespace parsed correctly", func() {
@@ -50,8 +50,8 @@ func TestCSVImportDocument(t *testing.T) {
 				"b": 2,
 				"c": `foo" "bar`,
 			}
-			csvImporter := NewCSVImportInput(fields, bytes.NewReader([]byte(contents)))
-			bsonDoc, err := csvImporter.ImportDocument()
+			csvImporter := NewCSVInputReader(fields, bytes.NewReader([]byte(contents)))
+			bsonDoc, err := csvImporter.ReadDocument()
 			So(err, ShouldBeNil)
 			So(bsonDoc, ShouldResemble, expectedRead)
 		})
@@ -63,8 +63,8 @@ func TestCSVImportDocument(t *testing.T) {
 				"b": 2,
 				"c": " 3e",
 			}
-			csvImporter := NewCSVImportInput(fields, bytes.NewReader([]byte(contents)))
-			bsonDoc, err := csvImporter.ImportDocument()
+			csvImporter := NewCSVInputReader(fields, bytes.NewReader([]byte(contents)))
+			bsonDoc, err := csvImporter.ReadDocument()
 			So(err, ShouldBeNil)
 			So(bsonDoc, ShouldResemble, expectedRead)
 		})
@@ -78,8 +78,8 @@ func TestCSVImportDocument(t *testing.T) {
 				"c":      " 3e",
 				"field3": " may",
 			}
-			csvImporter := NewCSVImportInput(fields, bytes.NewReader([]byte(contents)))
-			bsonDoc, err := csvImporter.ImportDocument()
+			csvImporter := NewCSVInputReader(fields, bytes.NewReader([]byte(contents)))
+			bsonDoc, err := csvImporter.ReadDocument()
 			So(err, ShouldBeNil)
 			So(bsonDoc, ShouldResemble, expectedRead)
 		})
@@ -95,8 +95,8 @@ func TestCSVImportDocument(t *testing.T) {
 				"c":      " 3e",
 				"field3": " may",
 			}
-			csvImporter := NewCSVImportInput(fields, bytes.NewReader([]byte(contents)))
-			bsonDoc, err := csvImporter.ImportDocument()
+			csvImporter := NewCSVInputReader(fields, bytes.NewReader([]byte(contents)))
+			bsonDoc, err := csvImporter.ReadDocument()
 			So(err, ShouldBeNil)
 			So(bsonDoc, ShouldResemble, expectedRead)
 		})
@@ -104,12 +104,12 @@ func TestCSVImportDocument(t *testing.T) {
 		Convey("nested csv fields causing header collisions should error", func() {
 			contents := `1, 2f , " 3e" , " may", june`
 			fields := []string{"a", "b.c", "field3"}
-			csvImporter := NewCSVImportInput(fields, bytes.NewReader([]byte(contents)))
-			_, err := csvImporter.ImportDocument()
+			csvImporter := NewCSVInputReader(fields, bytes.NewReader([]byte(contents)))
+			_, err := csvImporter.ReadDocument()
 			So(err, ShouldNotBeNil)
 		})
 
-		Convey("calling ImportDocument() for CSVs should return next set of "+
+		Convey("calling ReadDocument() for CSVs should return next set of "+
 			"values", func() {
 			contents := "1, 2, 3\n4, 5, 6"
 			fields := []string{"a", "b", "c"}
@@ -123,11 +123,11 @@ func TestCSVImportDocument(t *testing.T) {
 				"b": 5,
 				"c": 6,
 			}
-			csvImporter := NewCSVImportInput(fields, bytes.NewReader([]byte(contents)))
-			bsonDoc, err := csvImporter.ImportDocument()
+			csvImporter := NewCSVInputReader(fields, bytes.NewReader([]byte(contents)))
+			bsonDoc, err := csvImporter.ReadDocument()
 			So(err, ShouldBeNil)
 			So(bsonDoc, ShouldResemble, expectedReadOne)
-			bsonDoc, err = csvImporter.ImportDocument()
+			bsonDoc, err = csvImporter.ReadDocument()
 			So(err, ShouldBeNil)
 			So(bsonDoc, ShouldResemble, expectedReadTwo)
 		})
@@ -141,7 +141,7 @@ func TestCSVSetHeader(t *testing.T) {
 			func() {
 				contents := "extraHeader1, extraHeader2, extraHeader3"
 				fields := []string{}
-				csvImporter := NewCSVImportInput(fields, bytes.NewReader([]byte(contents)))
+				csvImporter := NewCSVInputReader(fields, bytes.NewReader([]byte(contents)))
 				So(csvImporter.SetHeader(true), ShouldBeNil)
 				So(len(csvImporter.Fields), ShouldEqual, 3)
 			})
@@ -149,24 +149,24 @@ func TestCSVSetHeader(t *testing.T) {
 		Convey("setting non-colliding nested csv headers should not raise an error", func() {
 			contents := "a, b, c"
 			fields := []string{}
-			csvImporter := NewCSVImportInput(fields, bytes.NewReader([]byte(contents)))
+			csvImporter := NewCSVInputReader(fields, bytes.NewReader([]byte(contents)))
 			So(csvImporter.SetHeader(true), ShouldBeNil)
 			So(len(csvImporter.Fields), ShouldEqual, 3)
 			contents = "a.b.c, a.b.d, c"
 			fields = []string{}
-			csvImporter = NewCSVImportInput(fields, bytes.NewReader([]byte(contents)))
+			csvImporter = NewCSVInputReader(fields, bytes.NewReader([]byte(contents)))
 			So(csvImporter.SetHeader(true), ShouldBeNil)
 			So(len(csvImporter.Fields), ShouldEqual, 3)
 
 			contents = "a.b, ab, a.c"
 			fields = []string{}
-			csvImporter = NewCSVImportInput(fields, bytes.NewReader([]byte(contents)))
+			csvImporter = NewCSVInputReader(fields, bytes.NewReader([]byte(contents)))
 			So(csvImporter.SetHeader(true), ShouldBeNil)
 			So(len(csvImporter.Fields), ShouldEqual, 3)
 
 			contents = "a, ab, ac, dd"
 			fields = []string{}
-			csvImporter = NewCSVImportInput(fields, bytes.NewReader([]byte(contents)))
+			csvImporter = NewCSVInputReader(fields, bytes.NewReader([]byte(contents)))
 			So(csvImporter.SetHeader(true), ShouldBeNil)
 			So(len(csvImporter.Fields), ShouldEqual, 4)
 		})
@@ -174,17 +174,17 @@ func TestCSVSetHeader(t *testing.T) {
 		Convey("setting colliding nested csv headers should raise an error", func() {
 			contents := "a, a.b, c"
 			fields := []string{}
-			csvImporter := NewCSVImportInput(fields, bytes.NewReader([]byte(contents)))
+			csvImporter := NewCSVInputReader(fields, bytes.NewReader([]byte(contents)))
 			So(csvImporter.SetHeader(true), ShouldNotBeNil)
 
 			contents = "a.b.c, a.b.d.c, a.b.d"
 			fields = []string{}
-			csvImporter = NewCSVImportInput(fields, bytes.NewReader([]byte(contents)))
+			csvImporter = NewCSVInputReader(fields, bytes.NewReader([]byte(contents)))
 			So(csvImporter.SetHeader(true), ShouldNotBeNil)
 
 			contents = "a, a, a"
 			fields = []string{}
-			csvImporter = NewCSVImportInput(fields, bytes.NewReader([]byte(contents)))
+			csvImporter = NewCSVInputReader(fields, bytes.NewReader([]byte(contents)))
 			So(csvImporter.SetHeader(true), ShouldNotBeNil)
 		})
 
@@ -193,32 +193,32 @@ func TestCSVSetHeader(t *testing.T) {
 				contents := "c, a., b"
 				fields := []string{}
 				So(err, ShouldBeNil)
-				So(NewCSVImportInput(fields, bytes.NewReader([]byte(contents))).SetHeader(true), ShouldNotBeNil)
+				So(NewCSVInputReader(fields, bytes.NewReader([]byte(contents))).SetHeader(true), ShouldNotBeNil)
 			})
 
 		Convey("setting the header that starts in a dot should error",
 			func() {
 				contents := "c, .a, b"
 				fields := []string{}
-				So(NewCSVImportInput(fields, bytes.NewReader([]byte(contents))).SetHeader(true), ShouldNotBeNil)
+				So(NewCSVInputReader(fields, bytes.NewReader([]byte(contents))).SetHeader(true), ShouldNotBeNil)
 			})
 
 		Convey("setting the header that contains multiple consecutive dots should error",
 			func() {
 				contents := "c, a..a, b"
 				fields := []string{}
-				So(NewCSVImportInput(fields, bytes.NewReader([]byte(contents))).SetHeader(true), ShouldNotBeNil)
+				So(NewCSVInputReader(fields, bytes.NewReader([]byte(contents))).SetHeader(true), ShouldNotBeNil)
 
 				contents = "c, a.a, b.b...b"
 				fields = []string{}
-				So(NewCSVImportInput(fields, bytes.NewReader([]byte(contents))).SetHeader(true), ShouldNotBeNil)
+				So(NewCSVInputReader(fields, bytes.NewReader([]byte(contents))).SetHeader(true), ShouldNotBeNil)
 			})
 
 		Convey("setting the header using an empty file should return EOF",
 			func() {
 				contents := ""
 				fields := []string{}
-				csvImporter := NewCSVImportInput(fields, bytes.NewReader([]byte(contents)))
+				csvImporter := NewCSVInputReader(fields, bytes.NewReader([]byte(contents)))
 				So(csvImporter.SetHeader(true), ShouldEqual, io.EOF)
 				So(len(csvImporter.Fields), ShouldEqual, 0)
 			})
@@ -227,7 +227,7 @@ func TestCSVSetHeader(t *testing.T) {
 			func() {
 				contents := "extraHeader1,extraHeader2,extraHeader3"
 				fields := []string{"a", "b", "c"}
-				csvImporter := NewCSVImportInput(fields, bytes.NewReader([]byte(contents)))
+				csvImporter := NewCSVInputReader(fields, bytes.NewReader([]byte(contents)))
 				So(csvImporter.SetHeader(true), ShouldBeNil)
 				// if SetHeader() is called with fields already passed in,
 				// the header should be replaced with the read header line
@@ -243,11 +243,11 @@ func TestCSVSetHeader(t *testing.T) {
 				expectedReadTwo := bson.M{"a": 3, "b": 5.4, "c": "string"}
 				fileHandle, err := os.Open("testdata/test.csv")
 				So(err, ShouldBeNil)
-				csvImporter := NewCSVImportInput(fields, fileHandle)
-				bsonDoc, err := csvImporter.ImportDocument()
+				csvImporter := NewCSVInputReader(fields, fileHandle)
+				bsonDoc, err := csvImporter.ReadDocument()
 				So(err, ShouldBeNil)
 				So(bsonDoc, ShouldResemble, expectedReadOne)
-				bsonDoc, err = csvImporter.ImportDocument()
+				bsonDoc, err = csvImporter.ReadDocument()
 				So(err, ShouldBeNil)
 				So(bsonDoc, ShouldResemble, expectedReadTwo)
 			})

@@ -79,6 +79,20 @@ func Unmarshal(data []byte, v interface{}) error {
 	return d.unmarshal(v)
 }
 
+func UnmarshalMap(data []byte) (map[string]interface{}, error) {
+	// Check for well-formedness.
+	// Avoids filling out half a data structure
+	// before discovering a JSON syntax error.
+	var d decodeState
+	err := checkValid(data, &d.scan)
+	if err != nil {
+		return nil, err
+	}
+
+	d.init(data)
+	return d.unmarshalMap()
+}
+
 // Unmarshaler is the interface implemented by objects
 // that can unmarshal a JSON description of themselves.
 // The input can be assumed to be a valid encoding of
@@ -127,6 +141,25 @@ func (e *InvalidUnmarshalError) Error() string {
 		return "json: Unmarshal(non-pointer " + e.Type.String() + ")"
 	}
 	return "json: Unmarshal(nil " + e.Type.String() + ")"
+}
+
+func (d *decodeState) unmarshalMap() (out map[string]interface{}, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			if _, ok := r.(runtime.Error); ok {
+				panic(r)
+			}
+			err = r.(error)
+		}
+	}()
+
+	d.scan.reset()
+	// We decode rv not rv.Elem because the Unmarshaler interface
+	// test must be applied at the top level of the value.
+	out = d.document()
+	//return d.document()
+	return out, d.savedError
+	//return d.savedError
 }
 
 func (d *decodeState) unmarshal(v interface{}) (err error) {
@@ -275,6 +308,16 @@ func (d *decodeState) scanWhile(op int) int {
 		}
 	}
 	return newOp
+}
+
+func (d *decodeState) document() map[string]interface{} {
+	switch op := d.scanWhile(scanSkipSpace); op {
+	default:
+		d.error(errPhase)
+		return nil
+	case scanBeginObject:
+		return d.objectInterface()
+	}
 }
 
 // value decodes a JSON value from d.data[d.off:] into the value.

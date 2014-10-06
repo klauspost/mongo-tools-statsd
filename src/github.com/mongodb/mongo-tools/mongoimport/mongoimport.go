@@ -8,14 +8,16 @@ import (
 	commonOpts "github.com/mongodb/mongo-tools/common/options"
 	"github.com/mongodb/mongo-tools/common/util"
 	"github.com/mongodb/mongo-tools/mongoimport/options"
+	"gopkg.in/mgo.v2"
 	"gopkg.in/mgo.v2/bson"
 	"io"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
+	"sync"
 )
 
+// input type constants
 const (
 	CSV  = "csv"
 	TSV  = "tsv"
@@ -24,13 +26,30 @@ const (
 
 // compile-time interface sanity check
 var (
-	_ ImportInput = (*CSVImportInput)(nil)
-	_ ImportInput = (*TSVImportInput)(nil)
-	_ ImportInput = (*JSONImportInput)(nil)
+	_ InputReader = (*CSVInputReader)(nil)
+	_ InputReader = (*TSVInputReader)(nil)
+	_ InputReader = (*JSONInputReader)(nil)
 )
 
+// known errors to look out for - we immediately
+// terminate mongoimport if we get any of these errors
 var (
-	errNsNotFound = errors.New("ns not found")
+	errNsNotFound        = errors.New("ns not found")
+	errNoReachableServer = errors.New("no reachable servers")
+)
+
+// ingestion constants
+const (
+	maxBSONSize         = 16 * (1024 * 1024)
+	maxMessageSizeBytes = 2 * maxBSONSize
+	maxWriteBatchSize   = 1000
+)
+
+// variables used by the input/ingestion goroutines
+var (
+	insertionLock  = &sync.Mutex{}
+	insertionCount = uint64(0)
+	numWorkers     = 1
 )
 
 // Wrapper for MongoImport functionality
@@ -48,47 +67,27 @@ type MongoImport struct {
 	SessionProvider *db.SessionProvider
 }
 
-// ImportInput is an interface that specifies how an input source should be
+// InputReader is an interface that specifies how an input source should be
 // converted to BSON
-type ImportInput interface {
-	// ImportDocument reads the given record from the given io.Reader according
-	// to the format supported by the underlying ImportInput implementation.
-	ImportDocument() (bson.M, error)
+type InputReader interface {
+	// ReadDocument reads the given record from the given io.Reader according
+	// to the format supported by the underlying InputReader implementation. It
+	// returns the documents read on the bson.M channel and also puts any errors
+	// it encounters on the error channel
+	ReadDocument(chan bson.M, chan error)
 
 	// SetHeader sets the header for the CSV/TSV import when --headerline is
 	// specified. It a --fields or --fieldFile argument is passed, it overwrites
 	// the values of those with what is read from the input source
 	SetHeader(bool) error
 
-	// ReadHeadersFromSource attempts to reads the header fields for the specific implementation
+	// ReadHeadersFromSource attempts to reads the header fields for the
+	// specific implementation
 	ReadHeadersFromSource() ([]string, error)
 
-	// GetHeaders returns the current set of header fields for the specific implementation
+	// GetHeaders returns the current set of header fields for the specific
+	// implementation
 	GetHeaders() []string
-}
-
-func (mongoImport *MongoImport) getImportWriter() ImportWriter {
-	var upsertFields []string
-	if mongoImport.IngestOptions.Upsert &&
-		len(mongoImport.IngestOptions.UpsertFields) != 0 {
-		upsertFields = strings.Split(mongoImport.IngestOptions.UpsertFields, ",")
-	}
-	if mongoImport.ToolOptions.DBPath == "" {
-		return &DriverImportWriter{
-			upsertMode:      mongoImport.IngestOptions.Upsert,
-			upsertFields:    upsertFields,
-			sessionProvider: mongoImport.SessionProvider,
-			session:         nil,
-		}
-	}
-	return &ShimImportWriter{
-		upsertMode:   mongoImport.IngestOptions.Upsert,
-		upsertFields: upsertFields,
-		dbPath:       util.ToUniversalPath(mongoImport.ToolOptions.DBPath),
-		dirPerDB:     mongoImport.ToolOptions.DirectoryPerDB,
-		db:           mongoImport.ToolOptions.Namespace.DB,
-		collection:   mongoImport.ToolOptions.Namespace.Collection,
-	}
 }
 
 // ValidateSettings ensures that the tool specific options supplied for
@@ -97,12 +96,19 @@ func (mongoImport *MongoImport) ValidateSettings(args []string) error {
 	if err := mongoImport.ToolOptions.Validate(); err != nil {
 		return err
 	}
+
+	// --dbpath is now deprecated for tools with version >= v2.8
+	if mongoImport.ToolOptions.DBPath != "" {
+		return fmt.Errorf("--dbpath is now deprecated. start a mongod instead")
+	}
+
 	// Namespace must have a valid database if none is specified,
 	// use 'test'
 	if mongoImport.ToolOptions.Namespace.DB == "" {
 		mongoImport.ToolOptions.Namespace.DB = "test"
 	} else {
-		if err := util.ValidateDBName(mongoImport.ToolOptions.Namespace.DB); err != nil {
+		err := util.ValidateDBName(mongoImport.ToolOptions.Namespace.DB)
+		if err != nil {
 			return err
 		}
 	}
@@ -141,19 +147,26 @@ func (mongoImport *MongoImport) ValidateSettings(args []string) error {
 			}
 		}
 	}
+
+	// ensure no more than one positional argument is supplied
 	if len(args) > 1 {
 		return fmt.Errorf("too many positional arguments")
 	}
+
+	// ensure either a positional argument is supplied or an argument is passed
+	// to the --file flag - and not both
 	if mongoImport.InputOptions.File != "" && len(args) != 0 {
 		return fmt.Errorf(`multiple occurrences of option "--file"`)
 	}
+
 	var fileBaseName string
+
 	if mongoImport.InputOptions.File != "" {
 		fileBaseName = mongoImport.InputOptions.File
 	} else {
 		if len(args) != 0 {
 			fileBaseName = args[0]
-			mongoImport.InputOptions.File = args[0]
+			mongoImport.InputOptions.File = fileBaseName
 		}
 	}
 
@@ -177,8 +190,8 @@ func (mongoImport *MongoImport) ValidateSettings(args []string) error {
 	return nil
 }
 
-// getInputReader returns an io.Reader corresponding to the input location
-func (mongoImport *MongoImport) getInputReader() (io.ReadCloser, error) {
+// getSourceReader returns an io.Reader to read from the input source
+func (mongoImport *MongoImport) getSourceReader() (io.ReadCloser, error) {
 	if mongoImport.InputOptions.File != "" {
 		file, err := os.Open(util.ToUniversalPath(mongoImport.InputOptions.File))
 		if err != nil {
@@ -198,126 +211,243 @@ func (mongoImport *MongoImport) getInputReader() (io.ReadCloser, error) {
 // ImportDocuments is used to write input data to the database. It returns the
 // number of documents successfully imported to the appropriate namespace and
 // any error encountered in doing this
-func (mongoImport *MongoImport) ImportDocuments() (int64, error) {
-	in, err := mongoImport.getInputReader()
+func (mongoImport *MongoImport) ImportDocuments() (uint64, error) {
+	source, err := mongoImport.getSourceReader()
 	if err != nil {
 		return 0, err
 	}
-	defer in.Close()
+	defer source.Close()
 
-	importInput, err := mongoImport.getImportInput(in)
+	inputReader, err := mongoImport.getInputReader(source)
 	if err != nil {
 		return 0, err
 	}
 
-	err = importInput.SetHeader(mongoImport.InputOptions.HeaderLine)
+	err = inputReader.SetHeader(mongoImport.InputOptions.HeaderLine)
 	if err != nil {
 		return 0, err
 	}
-	return mongoImport.importDocuments(importInput)
+	return mongoImport.importDocuments(inputReader)
 }
 
 // importDocuments is a helper to ImportDocuments and does all the ingestion
-// work by taking data from the 'importInput' source and writing it to the
+// work by taking data from the inputReader source and writing it to the
 // appropriate namespace
-func (mongoImport *MongoImport) importDocuments(importInput ImportInput) (docsCount int64, err error) {
-	importWriter := mongoImport.getImportWriter()
+func (mongoImport *MongoImport) importDocuments(inputReader InputReader) (uint64, error) {
 	connURL := mongoImport.ToolOptions.Host
 	if connURL == "" {
 		connURL = util.DefaultHost
 	}
+	var readErr error
+	session, err := mongoImport.SessionProvider.GetSession()
+	if err != nil {
+		return 0, fmt.Errorf("error connecting to mongod: %v", err)
+	}
+	defer func() {
+		session.Close()
+		if readErr != nil && readErr == io.EOF {
+			readErr = nil
+		}
+		if err == nil {
+			err = readErr
+		}
+	}()
+
 	if mongoImport.ToolOptions.Port != "" {
 		connURL = connURL + ":" + mongoImport.ToolOptions.Port
 	}
 	log.Logf(0, "connected to: %v", connURL)
 
-	err = importWriter.Open(
-		mongoImport.ToolOptions.Namespace.DB,
-		mongoImport.ToolOptions.Namespace.Collection,
-	)
-	if err != nil {
-		return
-	}
 	log.Logf(1, "ns: %v.%v",
 		mongoImport.ToolOptions.Namespace.DB,
 		mongoImport.ToolOptions.Namespace.Collection)
-
-	defer func() {
-		closeErr := importWriter.Close()
-		if err == nil {
-			err = closeErr
-		}
-	}()
 
 	// drop the database if necessary
 	if mongoImport.IngestOptions.Drop {
 		log.Logf(0, "dropping: %v.%v",
 			mongoImport.ToolOptions.DB,
 			mongoImport.ToolOptions.Collection)
-
-		if err := importWriter.Drop(); err != nil &&
-			err.Error() != errNsNotFound.Error() {
-			return 0, err
+		collection := session.DB(mongoImport.ToolOptions.DB).
+			C(mongoImport.ToolOptions.Collection)
+		if err := collection.DropCollection(); err != nil {
+			// TODO: do all mongods (e.g. v2.4) return this same
+			// error message?
+			if err.Error() != errNsNotFound.Error() {
+				return 0, err
+			}
 		}
 	}
 
-	ignoreBlanks := mongoImport.IngestOptions.IgnoreBlanks &&
-		mongoImport.InputOptions.Type != JSON
+	// set the number of worker threads
+	numWorkers = mongoImport.IngestOptions.NumThreads
 
-	for {
-		document, err := importInput.ImportDocument()
+	// readDocChan is buffered with maxWriteBatchSize * numWorkers
+	// to ensure we never block reading
+	readDocChan := make(chan bson.M, maxWriteBatchSize*numWorkers)
+
+	// any read errors should cause mongoimport to stop
+	// ingestion and immediately terminate; thus, we
+	// leave this channel unbuffered
+	readErrChan := make(chan error)
+
+	// handle all input reads in a separate goroutine
+	go inputReader.ReadDocument(readDocChan, readErrChan)
+
+	// return immediately on ingest errors - these will be triggered
+	// either by an issue ingesting data or if the read channel is
+	// closed so we can block here while reads happen in a goroutine
+	if err = mongoImport.IngestDocuments(readDocChan); err != nil {
+		return insertionCount, err
+	}
+	readErr = <-readErrChan
+	return insertionCount, err
+}
+
+// IngestDocuments takes a slice of documents and either inserts/upserts them -
+// based on whether an upsert is requested - into the given collection
+func (mongoImport *MongoImport) IngestDocuments(readChan chan bson.M) (err error) {
+	ingestErr := make(chan error, numWorkers)
+
+	// spawn all the worker threads, each in its own goroutine
+	for i := 0; i < numWorkers; i++ {
+		go func() {
+			ingestErr <- mongoImport.ingestDocs(readChan)
+		}()
+	}
+	doneWorkers := 0
+
+	// Each ingest worker will return an error which may
+	// be nil or not. It will be not nil in any of this cases:
+	//
+	// 1. There is a problem connecting with the server
+	// 2. There server becomes unreachable
+	// 3. There is an insertion/update error - e.g. duplicate key
+	//    error - and stopOnError is set to true
+
+	for err = range ingestErr {
+		doneWorkers++
+		// TODO: perhaps signal other workers to terminate immediately
 		if err != nil {
-			if err == io.EOF {
-				return docsCount, nil
-			}
-			if mongoImport.IngestOptions.StopOnError {
-				return docsCount, err
-			}
-			if document == nil {
-				return docsCount, err
-			}
-			log.Logf(0, "error importing document: %v", err)
-			continue
+			return
 		}
+		if doneWorkers == numWorkers {
+			return
+		}
+	}
+	return
+}
 
+// ingestDocuments is a helper to IngestDocuments - it reads document off the
+// read channel and prepares then for insertion into the database
+func (mongoImport *MongoImport) ingestDocs(readChan chan bson.M) (err error) {
+	ignoreBlanks := mongoImport.IngestOptions.IgnoreBlanks && mongoImport.InputOptions.Type != JSON
+	documentBytes := make([]byte, 0)
+	documents := make([]interface{}, 0)
+	numMessageBytes := 0
+
+	// TODO: mgo does not reestablish connections once lost
+	session, err := mongoImport.SessionProvider.GetSession()
+	if err != nil {
+		return fmt.Errorf("error connecting to mongod: %v", err)
+	}
+	session.SetSocketTimeout(0)
+	defer session.Close()
+
+	collection := session.DB(mongoImport.ToolOptions.DB).
+		C(mongoImport.ToolOptions.Collection)
+
+	var document bson.M
+	for document = range readChan {
 		// ignore blank fields if specified
 		if ignoreBlanks {
 			document = removeBlankFields(document)
 		}
-		if err = importWriter.Import(document); err != nil {
-			if err.Error() == errNoReachableServer.Error() {
-				return docsCount, err
-			}
-			if mongoImport.IngestOptions.StopOnError {
-				return docsCount, err
-			}
-			log.Logf(0, "error inserting document: %v", err)
-			continue
+		if documentBytes, err = bson.Marshal(document); err != nil {
+			return err
 		}
-		docsCount++
+		numMessageBytes += len(documentBytes)
+		documents = append(documents, document)
+
+		// send documents over the wire when we hit the batch size or are at/over
+		// the maximum message size threshold
+		if len(documents) == maxWriteBatchSize ||
+			numMessageBytes >= maxMessageSizeBytes {
+			if err = mongoImport.ingester(documents, collection); err != nil {
+				return err
+			}
+			if insertionCount%10000 == 0 {
+				log.Logf(0, "Progress: %v documents inserted...", insertionCount)
+			}
+			log.Logf(1, "Progress: %v documents inserted...", insertionCount)
+			documents = documents[:0]
+			numMessageBytes = 0
+		}
 	}
+
+	// ingest any documents left in slice
+	if len(documents) != 0 {
+		return mongoImport.ingester(documents, collection)
+	}
+	return nil
 }
 
-// removeBlankFields removes empty/blank fields in csv and tsv
-func removeBlankFields(document bson.M) bson.M {
-	for key, value := range document {
-		if reflect.TypeOf(value).Kind() == reflect.String &&
-			value.(string) == "" {
-			delete(document, key)
+// ingester performs the actual insertion/updates. If no upsert fields are
+// present in the document to be inserted, it simply inserts the documents
+// into the given collection
+func (mongoImport *MongoImport) ingester(documents []interface{}, collection *mgo.Collection) (err error) {
+	selector := bson.M{}
+	upsertFields := strings.Split(mongoImport.IngestOptions.UpsertFields, ",")
+	// TODO: need a way of doing ordered/unordered bulk inserts
+	// perhaps based on numThreads.
+	if mongoImport.IngestOptions.Upsert {
+		for _, document := range documents {
+			selector = constructUpsertDocument(upsertFields, document.(bson.M))
+			if selector == nil {
+				err = collection.Insert(document)
+			} else {
+				_, err = collection.Upsert(selector, document.(bson.M))
+			}
+			if err != nil {
+				// TODO: what happens if the connection is lost
+				// in the middle of an ingest operation?
+				//
+				// Need to ascertain what kinds of errors the mgo
+				// driver returns for both insert/upsert operations
+				if mongoImport.IngestOptions.StopOnError ||
+					err.Error() == errNoReachableServer.Error() {
+					return err
+				}
+				log.Logf(0, "error inserting documents: %v", err)
+			}
+		}
+	} else {
+		err = collection.Insert(documents...)
+		if err != nil {
+			// TODO: what happens if the connection is lost
+			// in the middle of an ingest operation?
+			if mongoImport.IngestOptions.StopOnError ||
+				err.Error() == errNoReachableServer.Error() {
+				return err
+			}
+			log.Logf(0, "error inserting documents: %v", err)
 		}
 	}
-	return document
+
+	// TODO: what if only some documents were inserted? need to improve
+	// bulk insert support in mgo driver
+	insertionLock.Lock()
+	insertionCount += uint64(len(documents))
+	insertionLock.Unlock()
+	return nil
 }
 
-// getImportInput returns an implementation of ImportInput which can handle
+// getInputReader returns an implementation of InputReader which can handle
 // transforming TSV, CSV, or JSON into appropriate BSON documents
-func (mongoImport *MongoImport) getImportInput(in io.Reader) (ImportInput,
-	error) {
+func (mongoImport *MongoImport) getInputReader(in io.Reader) (InputReader, error) {
 	var fields []string
 	var err error
 	if len(mongoImport.InputOptions.Fields) != 0 {
-		fields = strings.Split(strings.Trim(mongoImport.InputOptions.Fields,
-			" "), ",")
+		fields = strings.Split(strings.Trim(mongoImport.InputOptions.Fields, " "), ",")
 	} else if mongoImport.InputOptions.FieldFile != "" {
 		fields, err = util.GetFieldsFromFile(mongoImport.InputOptions.FieldFile)
 		if err != nil {
@@ -325,9 +455,9 @@ func (mongoImport *MongoImport) getImportInput(in io.Reader) (ImportInput,
 		}
 	}
 	if mongoImport.InputOptions.Type == CSV {
-		return NewCSVImportInput(fields, in), nil
+		return NewCSVInputReader(fields, in), nil
 	} else if mongoImport.InputOptions.Type == TSV {
-		return NewTSVImportInput(fields, in), nil
+		return NewTSVInputReader(fields, in), nil
 	}
-	return NewJSONImportInput(mongoImport.InputOptions.JSONArray, in), nil
+	return NewJSONInputReader(mongoImport.InputOptions.JSONArray, in), nil
 }
