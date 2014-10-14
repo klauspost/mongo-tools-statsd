@@ -86,7 +86,7 @@ func (jsonImporter *JSONInputReader) ReadHeadersFromSource() ([]string, error) {
 
 // ReadDocument reads a line of input with the JSON representation of a document
 // and writes the BSON equivalent to the provided channel
-func (jsonImporter *JSONInputReader) ReadDocument(readChan chan bson.M, errChan chan error) {
+func (jsonImporter *JSONInputReader) ReadDocument(readChan chan bson.D, errChan chan error) {
 	rawChan := make(chan []byte, numWorkers)
 	var err error
 	go func() {
@@ -210,17 +210,19 @@ func (jsonImporter *JSONInputReader) readJSONArraySeparator() error {
 // based on the record. It sends this document on the readChan channel if there
 // are no errors. If any error is encountered, it sends this on the errChan
 // channel and returns immediately
-func (jsonImporter *JSONInputReader) decodeJSON(rawChan chan []byte, readChan chan bson.M) {
+func (jsonImporter *JSONInputReader) decodeJSON(rawChan chan []byte, readChan chan bson.D) {
+	var bsonD bson.D
 	for rawBytes := range rawChan {
-		document, err := json.UnmarshalMap(rawBytes)
+		document, err := json.UnmarshalBsonD(rawBytes)
 		if err != nil {
-			panic(fmt.Sprintf("JSON unmarshal error on document #%v: %v", jsonImporter.numProcessed, err))
+			panic(fmt.Sprintf("error unmarshalling bytes on document #%v: %v", jsonImporter.numProcessed, err))
 		}
 		log.Logf(2, "got line: %v", document)
-		if err = bsonutil.ConvertJSONDocumentToBSON(document); err != nil {
-			panic(fmt.Sprintf("JSON => BSON conversion error on document #%v: %v", jsonImporter.numProcessed, err))
+		// TODO: could move this to decode.go
+		if bsonD, err = bsonutil.GetExtendedBsonD(document); err != nil {
+			panic(fmt.Sprintf("error getting extended BSON for document #%v: %v", jsonImporter.numProcessed, err))
 		}
-		log.Logf(3, "got extended line: %#v", document)
-		readChan <- document
+		log.Logf(3, "got extended line: %#v", bsonD)
+		readChan <- bsonD
 	}
 }

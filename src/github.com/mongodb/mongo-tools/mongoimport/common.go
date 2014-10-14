@@ -10,6 +10,14 @@ import (
 	"strings"
 )
 
+func convertToBsonD(document bson.M) (bsonD bson.D) {
+	bsonD = bson.D{}
+	for key, value := range document {
+		bsonD = append(bsonD, bson.DocElem{key, value})
+	}
+	return
+}
+
 // constructUpsertDocument constructs a BSON document to use for upserts
 func constructUpsertDocument(upsertFields []string, document bson.M) bson.M {
 	upsertDocument := bson.M{}
@@ -64,31 +72,46 @@ func getUpsertValue(field string, document bson.M) interface{} {
 }
 
 // removeBlankFields removes empty/blank fields in csv and tsv
-func removeBlankFields(document bson.M) bson.M {
-	for key, value := range document {
+func removeBlankFields(document bson.D) bson.D {
+	for index, pair := range document {
+		value := pair.Value
 		if reflect.TypeOf(value).Kind() == reflect.String && value.(string) == "" {
-			delete(document, key)
+			document = append(document[:index], document[index+1:]...)
 		}
 	}
 	return document
 }
 
+func getElem(left string, document *bson.D) interface{} {
+	for _, elem := range *document {
+		if elem.Name == left {
+			return elem.Value
+		}
+	}
+	return nil
+}
+
 // setNestedValue takes a nested field - in the form "a.b.c" -
 // its associated value, and a document. It then assigns that
 // value to the appropriate nested field within the document
-func setNestedValue(field string, value interface{}, document bson.M) {
-	index := strings.Index(field, ".")
+func setNestedValue(key string, value interface{}, document *bson.D) {
+	index := strings.Index(key, ".")
 	if index == -1 {
-		document[field] = value
+		*document = append(*document, bson.DocElem{key, value})
 		return
 	}
-	left := field[0:index]
-	subDocument := bson.M{}
-	if document[left] != nil {
-		subDocument = document[left].(bson.M)
+	left := key[0:index]
+	subDocument := &bson.D{}
+	elem := getElem(left, document)
+	var existingKey bool
+	if elem != nil {
+		subDocument = elem.(*bson.D)
+		existingKey = true
 	}
-	setNestedValue(field[index+1:], value, subDocument)
-	document[left] = subDocument
+	setNestedValue(key[index+1:], value, subDocument)
+	if !existingKey {
+		*document = append(*document, bson.DocElem{left, subDocument})
+	}
 }
 
 // validateHeaders takes an InputReader, and does some validation on the

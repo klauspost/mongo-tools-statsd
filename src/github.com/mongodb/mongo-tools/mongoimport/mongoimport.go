@@ -74,7 +74,7 @@ type InputReader interface {
 	// to the format supported by the underlying InputReader implementation. It
 	// returns the documents read on the bson.M channel and also puts any errors
 	// it encounters on the error channel
-	ReadDocument(chan bson.M, chan error)
+	ReadDocument(chan bson.D, chan error)
 
 	// SetHeader sets the header for the CSV/TSV import when --headerline is
 	// specified. It a --fields or --fieldFile argument is passed, it overwrites
@@ -283,7 +283,7 @@ func (mongoImport *MongoImport) importDocuments(inputReader InputReader) (uint64
 
 	// readDocChan is buffered with maxWriteBatchSize * numWorkers
 	// to ensure we never block reading
-	readDocChan := make(chan bson.M, maxWriteBatchSize*numWorkers)
+	readDocChan := make(chan bson.D, maxWriteBatchSize*numWorkers)
 
 	// any read errors should cause mongoimport to stop
 	// ingestion and immediately terminate; thus, we
@@ -305,7 +305,7 @@ func (mongoImport *MongoImport) importDocuments(inputReader InputReader) (uint64
 
 // IngestDocuments takes a slice of documents and either inserts/upserts them -
 // based on whether an upsert is requested - into the given collection
-func (mongoImport *MongoImport) IngestDocuments(readChan chan bson.M) (err error) {
+func (mongoImport *MongoImport) IngestDocuments(readChan chan bson.D) (err error) {
 	ingestErr := make(chan error, numWorkers)
 
 	// spawn all the worker threads, each in its own goroutine
@@ -326,7 +326,7 @@ func (mongoImport *MongoImport) IngestDocuments(readChan chan bson.M) (err error
 
 	for err = range ingestErr {
 		doneWorkers++
-		// TODO: perhaps signal other workers to terminate immediately
+		// TODO suggestion: perhaps signal other workers to terminate immediately
 		if err != nil {
 			return
 		}
@@ -339,13 +339,13 @@ func (mongoImport *MongoImport) IngestDocuments(readChan chan bson.M) (err error
 
 // ingestDocuments is a helper to IngestDocuments - it reads document off the
 // read channel and prepares then for insertion into the database
-func (mongoImport *MongoImport) ingestDocs(readChan chan bson.M) (err error) {
+func (mongoImport *MongoImport) ingestDocs(readChan chan bson.D) (err error) {
 	ignoreBlanks := mongoImport.IngestOptions.IgnoreBlanks && mongoImport.InputOptions.Type != JSON
 	documentBytes := make([]byte, 0)
 	documents := make([]interface{}, 0)
 	numMessageBytes := 0
 
-	// TODO: mgo does not reestablish connections once lost
+	// TODO: mgo driver does not reestablish connections once lost
 	session, err := mongoImport.SessionProvider.GetSession()
 	if err != nil {
 		return fmt.Errorf("error connecting to mongod: %v", err)
@@ -356,7 +356,7 @@ func (mongoImport *MongoImport) ingestDocs(readChan chan bson.M) (err error) {
 	collection := session.DB(mongoImport.ToolOptions.DB).
 		C(mongoImport.ToolOptions.Collection)
 
-	var document bson.M
+	var document bson.D
 	for document = range readChan {
 		// ignore blank fields if specified
 		if ignoreBlanks {
@@ -366,7 +366,7 @@ func (mongoImport *MongoImport) ingestDocs(readChan chan bson.M) (err error) {
 			return err
 		}
 		numMessageBytes += len(documentBytes)
-		documents = append(documents, document)
+		documents = append(documents, bson.Raw{3, documentBytes})
 
 		// send documents over the wire when we hit the batch size or are at/over
 		// the maximum message size threshold
@@ -397,20 +397,21 @@ func (mongoImport *MongoImport) ingestDocs(readChan chan bson.M) (err error) {
 func (mongoImport *MongoImport) ingester(documents []interface{}, collection *mgo.Collection) (err error) {
 	selector := bson.M{}
 	upsertFields := strings.Split(mongoImport.IngestOptions.UpsertFields, ",")
-	// TODO: need a way of doing ordered/unordered bulk inserts
-	// perhaps based on numThreads.
+	// TODO: need a way of doing ordered/unordered
+	// bulk updates using write commands
 	if mongoImport.IngestOptions.Upsert {
-		for _, document := range documents {
-			selector = constructUpsertDocument(upsertFields, document.(bson.M))
+		for _, d := range documents {
+			var document bson.M
+			if err = bson.Unmarshal(d.(bson.Raw).Data, &document); err != nil {
+				return fmt.Errorf("error unmarshaling document: %v", err)
+			}
+			selector = constructUpsertDocument(upsertFields, document)
 			if selector == nil {
 				err = collection.Insert(document)
 			} else {
-				_, err = collection.Upsert(selector, document.(bson.M))
+				_, err = collection.Upsert(selector, document)
 			}
 			if err != nil {
-				// TODO: what happens if the connection is lost
-				// in the middle of an ingest operation?
-				//
 				// Need to ascertain what kinds of errors the mgo
 				// driver returns for both insert/upsert operations
 				if mongoImport.IngestOptions.StopOnError ||
@@ -423,8 +424,6 @@ func (mongoImport *MongoImport) ingester(documents []interface{}, collection *mg
 	} else {
 		err = collection.Insert(documents...)
 		if err != nil {
-			// TODO: what happens if the connection is lost
-			// in the middle of an ingest operation?
 			if mongoImport.IngestOptions.StopOnError ||
 				err.Error() == errNoReachableServer.Error() {
 				return err
@@ -433,8 +432,8 @@ func (mongoImport *MongoImport) ingester(documents []interface{}, collection *mg
 		}
 	}
 
-	// TODO: what if only some documents were inserted? need to improve
-	// bulk insert support in mgo driver
+	// TODO: what if only some documents were inserted? need
+	// to improve the bulk insert API support in mgo driver
 	insertionLock.Lock()
 	insertionCount += uint64(len(documents))
 	insertionLock.Unlock()

@@ -63,7 +63,7 @@ func (csvImporter *CSVInputReader) ReadHeadersFromSource() ([]string, error) {
 // ReadDocument reads a line of input with the CSV representation of a document
 // and writes the BSON equivalent to the provided read channel; if it encounters
 // an error in reading, it sends that error on the error channel.
-func (csvImporter *CSVInputReader) ReadDocument(readChan chan bson.M, errChan chan error) {
+func (csvImporter *CSVInputReader) ReadDocument(readChan chan bson.D, errChan chan error) {
 	csvRecordChan := make(chan []string, numWorkers)
 	var err error
 
@@ -104,7 +104,7 @@ func (csvImporter *CSVInputReader) ReadDocument(readChan chan bson.M, errChan ch
 // based on the record. It sends this document on the readChan channel if there
 // are no errors. If any error is encountered, it sends this on the errChan
 // channel and returns immediately
-func (csvImporter *CSVInputReader) sendCSV(csvRecordChan chan []string, readChan chan bson.M) {
+func (csvImporter *CSVInputReader) sendCSV(csvRecordChan chan []string, readChan chan bson.D) {
 	var key string
 	var parsedValue interface{}
 	var document bson.D
@@ -118,7 +118,7 @@ func (csvImporter *CSVInputReader) sendCSV(csvRecordChan chan []string, readChan
 				// for nested fields - in the form "a.b.c", ensure
 				// that the value is set accordingly
 				if strings.Index(csvImporter.Fields[index], ".") != -1 {
-					// setNestedValue(csvImporter.Fields[index], parsedValue, document)
+					setNestedValue(csvImporter.Fields[index], parsedValue, &document)
 				} else {
 					document = append(document, bson.DocElem{csvImporter.Fields[index], parsedValue})
 				}
@@ -131,6 +131,6 @@ func (csvImporter *CSVInputReader) sendCSV(csvRecordChan chan []string, readChan
 				document = append(document, bson.DocElem{csvImporter.Fields[index], parsedValue})
 			}
 		}
-		readChan <- bson.M{"body": "'''Wei-chi''' may refer to:\n*The [[game of go]]\n*The [[Chinese w", "page_id": 747205, "user": "TheQ Editor", "title": "Wei-chi"}
+		readChan <- document
 	}
 }

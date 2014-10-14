@@ -8,9 +8,7 @@ import (
 	"github.com/mongodb/mongo-tools/common/util"
 	"github.com/mongodb/mongo-tools/mongoimport"
 	"github.com/mongodb/mongo-tools/mongoimport/options"
-	"os"
 	"runtime"
-	"runtime/pprof"
 )
 
 func main() {
@@ -63,12 +61,7 @@ func main() {
 
 	// use all logical CPUs for concurrent operations
 	runtime.GOMAXPROCS(mongoImport.IngestOptions.NumThreads)
-	f, err := os.Create("cpuprofile")
-	if err != nil {
-		return
-	}
-	pprof.StartCPUProfile(f)
-	defer pprof.StopCPUProfile()
+
 	numDocs, err := mongoImport.ImportDocuments()
 	if err != nil {
 		log.Logf(0, "error importing documents: %v", err)

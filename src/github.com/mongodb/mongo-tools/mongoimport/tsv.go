@@ -7,7 +7,6 @@ import (
 	"github.com/mongodb/mongo-tools/common/util"
 	"gopkg.in/mgo.v2/bson"
 	"io"
-	"strconv"
 	"strings"
 	"sync"
 )
@@ -73,7 +72,7 @@ func (tsvImporter *TSVInputReader) ReadHeadersFromSource() ([]string, error) {
 
 // ReadDocument reads a line of input with the TSV representation of a document
 // and writes the BSON equivalent to the provided channel
-func (tsvImporter *TSVInputReader) ReadDocument(readChan chan bson.M, errChan chan error) {
+func (tsvImporter *TSVInputReader) ReadDocument(readChan chan bson.D, errChan chan error) {
 	tsvRecordChan := make(chan string, numWorkers)
 	var err error
 
@@ -114,9 +113,9 @@ func (tsvImporter *TSVInputReader) ReadDocument(readChan chan bson.M, errChan ch
 // based on the record. It sends this document on the readChan channel if there
 // are no errors. If any error is encountered, it sends this on the errChan
 // channel and returns immediately
-func (tsvImporter *TSVInputReader) sendTSV(tsvRecordChan chan string, readChan chan bson.M) {
+func (tsvImporter *TSVInputReader) sendTSV(tsvRecordChan chan string, readChan chan bson.D) {
 	var key string
-	var document bson.M
+	var document bson.D
 	for tsvRecord := range tsvRecordChan {
 		log.Logf(2, "got line: %v", tsvRecord)
 
@@ -124,22 +123,22 @@ func (tsvImporter *TSVInputReader) sendTSV(tsvRecordChan chan string, readChan c
 		if len(tsvRecord) != 0 {
 			tsvRecord = strings.TrimRight(tsvRecord, "\r\n")
 		}
-		document = bson.M{}
+		document = bson.D{}
 		for index, token := range strings.Split(tsvRecord, tokenSeparator) {
 			parsedValue := getParsedValue(token)
 			if index < len(tsvImporter.Fields) {
-				if strings.Contains(tsvImporter.Fields[index], ".") {
-					setNestedValue(tsvImporter.Fields[index], parsedValue, document)
+				if strings.Index(tsvImporter.Fields[index], ".") != -1 {
+					setNestedValue(tsvImporter.Fields[index], parsedValue, &document)
 				} else {
-					document[tsvImporter.Fields[index]] = parsedValue
+					document = append(document, bson.DocElem{tsvImporter.Fields[index], parsedValue})
 				}
 			} else {
-				key = "field" + strconv.Itoa(index)
+				key = "field" + string(index)
 				if util.StringSliceContains(tsvImporter.Fields, key) {
 					panic(fmt.Sprintf("Duplicate header name - on %v - for token #%v ('%v') in document #%v",
 						key, index+1, parsedValue, tsvImporter.numProcessed))
 				}
-				document[key] = parsedValue
+				document = append(document, bson.DocElem{tsvImporter.Fields[index], parsedValue})
 			}
 		}
 		readChan <- document
