@@ -1,4 +1,4 @@
-# MongoDB Tools
+# MongoDB Tools (with statsd output)
 
 This is the 2.7.x **unstable** branch. This project is a work in progress.
  
@@ -13,6 +13,9 @@ This is the 2.7.x **unstable** branch. This project is a work in progress.
 
 Report any bugs, improvements, or new feature requests at https://jira.mongodb.org/browse/tools
 
+##Statsd output
+
+- **mongostat** and **mongotop** adds options to output to statsd. Use the /statsdhost:hostname:ip to enable.
  
 ####Setup
 
