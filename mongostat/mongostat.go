@@ -5,12 +5,17 @@ import (
 	"github.com/mongodb/mongo-tools/common/db"
 	commonopts "github.com/mongodb/mongo-tools/common/options"
 	"github.com/mongodb/mongo-tools/mongostat/options"
+	"github.com/peterbourgon/g2s"
 	"gopkg.in/mgo.v2"
 	"gopkg.in/mgo.v2/bson"
 	"strings"
 	"sync"
 	"time"
 )
+
+// Global statter (can't find a good way of passing it - it claims to be concurrency safe though)
+var Statter g2s.Statter
+var StatPrefix string
 
 //MongoStat is a container for the user-specified options and
 //internal cluster state used for running mongostat.
@@ -37,6 +42,9 @@ type MongoStat struct {
 
 	//Mutex to handle safe concurrent adding to or looping over discovered nodes
 	nodesLock sync.RWMutex
+
+	Statter g2s.Statter
+	Prefix  string
 }
 
 type ConfigShard struct {
@@ -96,8 +104,12 @@ func (cluster *ClusterMonitor) printSnapshot(includeHeaders bool, discover bool)
 	for _, stat := range cluster.LastStatLines {
 		lines = append(lines, stat)
 	}
-	out := FormatLines(lines, includeHeaders, discover)
-	fmt.Print(out)
+	if Statter != nil {
+		SendLines(lines, Statter, StatPrefix, discover)
+	} else {
+		out := FormatLines(lines, includeHeaders, discover)
+		fmt.Print(out)
+	}
 }
 
 //Monitor starts the goroutines that listen for incoming stat data,
@@ -253,6 +265,9 @@ func (mstat *MongoStat) AddNewNode(fullhost string) {
 //Run is the top-level function that starts the monitoring
 //and discovery goroutines
 func (mstat *MongoStat) Run() error {
+	Statter = mstat.Statter
+	StatPrefix = mstat.Prefix
+
 	if mstat.Discovered != nil {
 		go func() {
 			for {

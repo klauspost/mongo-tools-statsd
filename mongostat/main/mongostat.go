@@ -6,6 +6,7 @@ import (
 	"github.com/mongodb/mongo-tools/common/util"
 	"github.com/mongodb/mongo-tools/mongostat"
 	"github.com/mongodb/mongo-tools/mongostat/options"
+	"github.com/peterbourgon/g2s"
 	"os"
 	"strconv"
 	"time"
@@ -75,6 +76,21 @@ func main() {
 			LastStatLines: map[string]mongostat.StatLine{},
 			NoHeaders:     statOpts.NoHeaders,
 		},
+	}
+
+	// Initialize statsd connection
+	if statOpts.StatsdHost != "" {
+		prefix := statOpts.StatsdPrefix
+		if prefix == "" {
+			prefix = "mongodb"
+		}
+		Statter, err := g2s.DialTimeout("udp", statOpts.StatsdHost, time.Duration(sleepInterval)*time.Second)
+		if err != nil {
+			util.Panicf("Unable to connect to statsd server: %s", err.Error())
+		}
+		util.Printlnf("Connected to statsd server " + statOpts.StatsdHost)
+		stat.Statter = Statter
+		stat.Prefix = prefix + "."
 	}
 
 	seedHost := opts.Host

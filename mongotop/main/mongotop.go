@@ -8,6 +8,7 @@ import (
 	"github.com/mongodb/mongo-tools/mongotop"
 	"github.com/mongodb/mongo-tools/mongotop/options"
 	"github.com/mongodb/mongo-tools/mongotop/output"
+	"github.com/peterbourgon/g2s"
 	"strconv"
 	"time"
 )
@@ -65,6 +66,20 @@ func main() {
 		SessionProvider: sessionProvider,
 		Sleeptime:       time.Duration(sleeptime) * time.Second,
 		Once:            outputOpts.Once,
+	}
+
+	// Initialize statds connection
+	if outputOpts.StatsdHost != "" {
+		prefix := outputOpts.StatsdPrefix
+		if prefix == "" {
+			prefix = "mongodb"
+		}
+		Statter, err := g2s.DialTimeout("udp", outputOpts.StatsdHost, time.Duration(sleeptime)*time.Second)
+		if err != nil {
+			util.Panicf("Unable to connect to statsd server: %s", err.Error())
+		}
+		util.Printlnf("Connected to statsd server " + outputOpts.StatsdHost)
+		top.Outputter = &output.StatsdOutputter{Statter: Statter, Multiplier: 1.0 / float32(sleeptime), Prefix: prefix + "."}
 	}
 
 	// kick it off
